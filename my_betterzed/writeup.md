@@ -7,7 +7,7 @@ We're given a website that can:
 
 What I described above may not make much sense, especially if you've seen the website and the additional *decrypt* functionality. The reason why I excluded decryption is because decryption is useless.
 
-Basically, we can replicate decryption on our own. The website encrypts the flag with an unknown password, and we are only able to leverage this unknown password by encrypting our own input - the decryption functionality doesn't allow this. It's possible to provide our own password to encrypt/decrypt, but since we can see the source code this is basically useless as we can encrypt/decrypt on the server-side ourselves.
+The reason why the website is so useful is because the flag can only be encrypted with some unknown password. Fortunately, we can encrypt whatever we want with this unknown password, but we can't decrypt whatever we want with the unknown password. Although there is a feature to encrypt/decrypt with some custom password we provide, we can replicate this functionality locally anyway.
 
 Decrypting the flag with only an encryption oracle seems impossible, until you read the `encrypt` function carefully:
 ```py
@@ -35,10 +35,10 @@ for pos in range(0, len(plaintext), 16):
         xored = bytes(xor(chunk, ciphertext[pos-16:pos]))
         ciphertext += ecb_cipher.encrypt(xored)
 ```
-Specifically, note that AES CFB is used on the last in our plaintext, and the rest is encrypted with AES CBC. Both AES-CFB and AES-CBC perform AES encryption on 16-byte blocks of input, but do some in-between XORing, and in different orders (let `prev` be the previous ciphertext block, and the IV if we're on the first block):
+Specifically, note that AES CFB is used on the last $16$-byte chunk in our plaintext, and the rest is encrypted with AES-CBC. Both AES-CFB and AES-CBC perform AES encryption on 16-byte blocks of input, but do some in-between XORing, and in different orders (let `prev` be the IV if we're on the first block, and the previous ciphertext block otherwise):
 - AES-CFB calculates $\mathrm{enc}(\mathrm{prev})\oplus \mathrm{chunk}$
 - AES-CBC calculates $\mathrm{enc(prev\oplus \mathrm{chunk})}$
 
-Since our flag is $\le$ 16 bytes (how convenient!!!), the encrypted flag will just be $\mathrm{enc}(iv)\oplus\mathrm{flag}$. Thus, if we XOR all of this with $\mathrm{enc}(\mathrm{iv})$, we will get the flag.
+Since our flag is $\le$ 16 bytes (how convenient!!!), the encrypted flag will just be $\mathrm{enc}(\mathrm{iv})\oplus\mathrm{flag}$. Thus, if we XOR this encrypted flag with $\mathrm{enc}(\mathrm{iv})$, we will get the flag.
 
-We obtain this value by CBC-encrypting the IV we obtain from the JSON body after getting the encrypted flag with an IV of 16 NULL bytes on the server ($0\oplus \mathrm{iv} = \mathrm{iv}$). To force CBC-encryption, we can add 16 more dummy bytes into our input and get the first 16 bytes of the returned ciphertext.
+We can CBC-encrypt the IV (and thus basically ECB encrypt since the IV is exactly $16$ bytes) we obtain from the JSON body after getting the encrypted flag with an IV of 16 NULL bytes on the server ($0\oplus \mathrm{iv} = \mathrm{iv}$). To force CBC-encryption, we should add 16 more dummy bytes into our input and get the first 16 bytes of the returned ciphertext (which will correspond to the ECB-encrypted IV), and finally XOR it with our encrypted flag.
