@@ -1,0 +1,111 @@
+import os
+os.environ['PWNLIB_NOTERM'] = "1" # pwntools sage is cooked??
+os.environ["TERM"] = "xterm-256color"
+
+from pwn import *
+from tinyec.ec import SubGroup, Curve
+from json import loads, dumps
+from Crypto.Cipher import AES
+from hashlib import sha3_256
+
+host = "vendingmachine-ddf505bff2f08a36.deploy.phreaks.fr"
+port = 443
+p = remote(host, port, ssl=True, sni="vendingmachine-ddf505bff2f08a36.deploy.phreaks.fr")
+owner_proofs = []
+used_credit = 0
+callnum = 0
+
+B = 2**(256 - 7)
+
+
+
+class SignatureManager:
+    def __init__(self):
+        # FRP256v1 Parameters
+        self.p = 0xf1fd178c0b3ad58f10126de8ce42435b3961adbcabc8ca6de8fcf353d86e9c03
+        self.a = 0xf1fd178c0b3ad58f10126de8ce42435b3961adbcabc8ca6de8fcf353d86e9c00
+        self.b = 0xee353fca5428a9300d4aba754a44c00fdfec0c9ae4b1a1803075ed967b7bb73f
+        self.Gx = 0xb6b3d4c356c139eb31183d4749d423958c27d2dcaf98b70164c97a2dd98f5cff
+        self.Gy = 0x6142e0f7c8b204911f9271f0f3ecef8c2701c307e8e4c9e183115a1554062cfb
+        self.n = 0xf1fd178c0b3ad58f10126de8ce42435b53dc67e140d2bf941ffdd459c6d655e1
+        self.h = 1
+
+        subgroup = SubGroup(self.p, (self.Gx, self.Gy), self.n, self.h)
+        self.curve = Curve(self.a, self.b, subgroup, name="CustomCurve")
+
+        self.P = self.curve.g
+
+sm = SignatureManager()
+
+class Sig:
+    def __init__(self, t):
+        self.m = int.from_bytes(sha3_256(bytes.fromhex(t[0])).digest())
+        print(t[0], self.m, "yeah it's this")
+        self.r = t[1]
+        self.s = (-t[2]) % sm.n
+
+def get_signatures():
+    p.recvuntil(b"in JSON format: ")
+    p.sendline(b'{"action": "get_signatures", "alea_1": -1, "alea_2": -2}')
+    return eval(p.recvline()) # :trollface:
+
+def buy_credit():
+    global callnum
+    p.recvuntil(b"in JSON format: ")
+    payload = {
+        "action": "buy_credit",
+        "owner_proofs": owner_proofs[:callnum]
+    }
+    p.sendline(dumps(payload).encode())
+    callnum += 5
+    return p.recvline()
+
+def get_encrypted_flag():
+    p.recvuntil(b"in JSON format: ")
+    p.sendline(b'{"action": "get_encrypted_flag"}')
+    
+    x = p.recvline().decode()
+    return eval(x) # :trollface:
+
+SIGS = 70
+
+flag_info = get_encrypted_flag()
+print(buy_credit())
+for _ in range(SIGS // 10):
+    used_credit += 1
+    for i, sig in enumerate(get_signatures()["signatures"]):
+        m = sha3_256(b"this is my lovely loved distributed item " + str(i+10*used_credit).encode()).digest().hex()
+        owner_proofs.append((m, int(sig[0]), int((-sig[1]) % sm.n))) # sage loves Integers, but json dumping doesn't
+
+    print(buy_credit())
+    print(buy_credit())
+
+sigs = list(map(Sig, owner_proofs))
+
+m = Matrix(QQ, nrows=SIGS+1, ncols=SIGS+1) # we operate on differences from signatures[0]
+for i in range(SIGS-1):
+    m[i,i] = sm.n
+    m[SIGS-1,i] = (sigs[i+1].r * pow(sigs[i+1].s, -1, sm.n) - sigs[0].r * pow(sigs[0].s, -1, sm.n)) % sm.n
+    m[SIGS,i] = (sigs[i+1].m * pow(sigs[i+1].s, -1, sm.n) - sigs[0].m * pow(sigs[0].s, -1, sm.n)) % sm.n
+
+m[SIGS-1,SIGS-1] = B / sm.n
+m[SIGS,SIGS] = B
+
+m = m.LLL()
+
+for row in m:
+    if row[-1] == B:
+        d = ((sigs[0].s * sigs[1].m) - (sigs[1].s * sigs[0].m) - (sigs[1].s * sigs[0].s * row[0])) % sm.n
+        d = (d * pow(sigs[0].r * sigs[1].s - (sigs[1].r * sigs[0].s), -1, sm.n)) % sm.n
+        print(row)
+        break
+else:
+    print("nup :(")
+    quit()
+
+
+key = sha3_256(int(d).to_bytes(32, "big")).digest()[:16]
+cipher = AES.new(key, IV=bytes.fromhex(flag_info["iv"]), mode=AES.MODE_CBC)
+print(cipher.decrypt(bytes.fromhex(flag_info["encrypted_flag"])))
+
+p.interactive()
